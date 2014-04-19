@@ -380,7 +380,8 @@ void mmc_start_delayed_bkops(struct mmc_card *card)
 		return;
 
 	if (card->bkops_info.sectors_changed <
-	    card->bkops_info.min_sectors_to_queue_delayed_work)
+	    card->bkops_info.min_sectors_to_queue_delayed_work &&
+	    !mmc_card_need_bkops(card))
 		return;
 
 	pr_debug("%s: %s: queueing delayed_bkops_work\n",
@@ -461,6 +462,8 @@ void mmc_start_bkops(struct mmc_card *card, bool from_exception)
 			       mmc_hostname(card->host), __func__, err);
 			goto out;
 		}
+		
+		card->bkops_info.sectors_changed = 0;
 
 		if (!card->ext_csd.raw_bkops_status)
 			goto out;

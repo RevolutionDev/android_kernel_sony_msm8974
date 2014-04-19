@@ -70,6 +70,7 @@ struct felica_dev {
 	int intu_curr_val;
 	wait_queue_head_t intu_wait_queue;
 	int hsel_ref;
+	bool initialized_rfs_val;
 };
 
 enum nfc_avp_type {
@@ -874,8 +875,12 @@ err_invalid:
 static int felica_rfs_irq_start(struct felica_dev *d)
 {
 	int ret;
+	int gpio_val;
+	unsigned long flags;
 
 	if (FELICA_SNFC == d->felica_data->type) {
+		d->initialized_rfs_val = false;
+
 		ret = request_threaded_irq(d->felica_data->irq_rfs, NULL,
 			nfc_rfs_irq,
 			IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING |
@@ -895,10 +900,31 @@ static int felica_rfs_irq_start(struct felica_dev *d)
 				__func__, ret);
 			goto err_enable_irq_wake;
 		}
+
+		gpio_val = d->felica_data->flrfs->rfs_read(
+			d->felica_data->user);
+		if (0 > gpio_val) {
+			ret = gpio_val;
+			dev_err(d->dev,
+				"%s: Error. Invalid GPIO value RFS read.\n",
+				__func__);
+			goto err_rfs_read;
+		}
+		spin_lock_irqsave(&spinlock, flags);
+		if (!d->initialized_rfs_val) {
+			d->available_poll_nfc &=
+				(AVP_CEN_STS_BIT | AVP_URT_STS_BIT);
+			d->available_poll_nfc |= (gpio_val & 0x1) << 1;
+			d->initialized_rfs_val = true;
+		}
+		spin_unlock_irqrestore(&spinlock, flags);
 	}
 
 	return 0;
 
+err_rfs_read:
+	if (FELICA_SNFC == d->felica_data->type)
+		disable_irq_wake(d->felica_data->irq_rfs);
 err_enable_irq_wake:
 	if (FELICA_SNFC == d->felica_data->type)
 		free_irq(d->felica_data->irq_rfs, d);
@@ -1365,6 +1391,7 @@ static void nfc_available_poll_set_status(struct felica_dev *d,
 	case AVP_RFS:
 		d->available_poll_nfc &= (AVP_CEN_STS_BIT | AVP_URT_STS_BIT);
 		d->available_poll_nfc |= status << 1;
+		d->initialized_rfs_val = true;
 		break;
 	case AVP_URT:
 		d->available_poll_nfc &= (AVP_CEN_STS_BIT | AVP_RFS_STS_BIT);

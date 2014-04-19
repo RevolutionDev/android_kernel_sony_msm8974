@@ -20,7 +20,7 @@
 #include <linux/delay.h>
 #include <linux/miscdevice.h>
 #include <linux/clearpad.h>
-#include <linux/input/evgen_helper.h>
+#include <linux/input/evdt_helper.h>
 #include <mach/gpio.h>
 #include <linux/ctype.h>
 #include <linux/firmware.h>
@@ -31,10 +31,6 @@
 #include <linux/debugfs.h>
 #endif
 #include <linux/sched.h>
-#ifdef CONFIG_FB
-#include <linux/notifier.h>
-#include <linux/fb.h>
-#endif
 #ifdef CONFIG_ARM
 #include <asm/mach-types.h>
 #endif
@@ -67,6 +63,7 @@
 #define HWTEST_SIZE_OF_ONE_HIGH_RX		3
 #define HWTEST_SIZE_OF_TX_TO_TX_SHORT(x)	(((x) + 7) / 8)
 #define SYNAPTICS_WATCHDOG_POLL_DEFAULT_INTERVAL HZ
+#define SYNAPTICS_WAKEUP_GESTURE		"wakeup_gesture"
 
 #define SYN_ADDRESS(th, func, type, addr) ((th)->pdt[func].base[type] + (addr))
 #define SYN_PAGE(th, func) ((th)->pdt[func].page)
@@ -86,9 +83,12 @@
 #define DEVICE_STATUS_FIRMWARE_CRC_FAILURE		0x05
 #define DEVICE_STATUS_CRC_IN_PROGRESS			0x06
 #define DEVICE_COMMAND_RESET				0x01
+#define DEVICE_COMMAND_REZERO				0x01
 #define DEVICE_CONTROL_SLEEP_MODE			0x03
 #define DEVICE_CONTROL_SLEEP_MODE_NORMAL_OPERATION	0x00
 #define DEVICE_CONTROL_SLEEP_MODE_SENSOR_SLEEP		0x01
+#define DEVICE_CONTROL_CHARGER_CONNECTED		0x20
+#define DEVICE_CONTROL_CHARGER_NOT_CONNECTED		0x00
 #define DEVICE_CONTROL_CONFIGURED			0x80
 #define DEVICE_PEN_SUPPORTED				0x01
 #define PEN_DETECT_F11_INTERRUPT			0x01
@@ -101,9 +101,6 @@
 #define XY_HAS_LPWG					0x10
 #define XY_REPORTING_MODE_REDUCED_REPORTING_MODE	0x01
 #define XY_REPORTING_MODE_WAKEUP_GESTURE_MODE		0x04
-#define XY_LPWG_STATUS_DOUBLE_TAP_DETECTED		0x01
-#define XY_LPWG_STATUS_SWIPE_DETECTED			0x02
-#define XY_LPWG_STATUS_TWO_SWIPE_DETECTED		0x04
 #define FLASH_CONTROL_WRITE_FIRMWARE_BLOCK		0x02
 #define FLASH_CONTROL_ERASE_ALL				0x03
 #define FLASH_CONTROL_WRITE_CONFIGURATION_BLOCK		0x06
@@ -183,11 +180,7 @@ enum synaptics_chip {
 	SYN_CHIP_3000	= 0x33,
 	SYN_CHIP_3200	= 0x35,
 	SYN_CHIP_3400	= 0x36,
-};
-
-enum synaptics_bootloader_id {
-	SYN_BOOTLOADER_ID_0 = 0,
-	SYN_BOOTLOADER_ID_1 = 1,
+	SYN_CHIP_7300	= 0x37,
 };
 
 static const char * const task_name[] = {
@@ -420,11 +413,10 @@ enum f12_2d_data_registers_id {
 struct synaptics_clearpad {
 	enum   synaptics_state state;
 	enum   synaptics_task task;
-	enum   synaptics_chip chip;
+	enum   synaptics_chip chip_id;
 	struct regulator *vreg_touch_vdd;
 	struct regulator *vreg_touch_vio;
 	struct input_dev *input;
-	struct input_dev *input_pen;
 	struct platform_device *pdev;
 	struct clearpad_platform_data *pdata;
 	struct clearpad_bus_data *bdata;
@@ -435,18 +427,16 @@ struct synaptics_clearpad {
 	struct synaptics_function_descriptor pdt[SYN_N_FUNCTIONS];
 	struct synaptics_flash_image flash;
 	struct synaptics_easy_wakeup_config easy_wakeup_config;
-	struct evgen_block *evgen_blocks;
 	bool fwdata_available;
 	enum synaptics_flash_modes flash_mode;
 	struct synaptics_extents extents;
 	int active;
 	int irq;
 	int irq_mask;
-#ifdef CONFIG_FB
-	struct notifier_block fb_notif;
-	struct work_struct notify_resume;
-	struct work_struct notify_suspend;
-#endif
+
+	int screen_status;
+	int charger_status;
+
 	char fwname[SYNAPTICS_STRING_LENGTH + 1];
 	char result_info[SYNAPTICS_STRING_LENGTH + 1];
 	wait_queue_head_t task_none_wq;
@@ -463,6 +453,8 @@ struct synaptics_clearpad {
 	u32 touch_pressure_enabled;
 	u32 touch_size_enabled;
 	u32 touch_orientation_enabled;
+	struct device_node *evdt_node;
+	u32 wakeup_gesture_support;
 	unsigned long ew_timeout;
 	struct delayed_work wd_poll_work;
 	int wd_poll_t_jf;
@@ -478,6 +470,8 @@ struct synaptics_clearpad {
 static void synaptics_funcarea_initialize(struct synaptics_clearpad *this);
 static void synaptics_clearpad_reset_power(struct synaptics_clearpad *this,
 					   const char *cause);
+static void synaptics_clearpad_resume(struct device *dev);
+static void synaptics_clearpad_suspend(struct device *dev);
 
 static char *make_string(u8 *array, size_t size)
 {
@@ -621,11 +615,6 @@ static int clearpad_flip_config_get(u8 module_id, u8 rev)
 	return SYN_FLIP_NONE;
 }
 
-static struct evgen_block *clearpad_evgen_block_get(u8 module_id, u8 rev)
-{
-	return NULL;
-}
-
 static void synaptics_clearpad_set_irq(struct synaptics_clearpad *this,
 					u8 user, bool enable)
 {
@@ -724,7 +713,7 @@ static int synaptics_clearpad_set_pen(struct synaptics_clearpad *this)
 	int rc = 0;
 	u8 buf;
 
-	if (this->chip == SYN_CHIP_3200) {
+	if (this->chip_id == SYN_CHIP_3200) {
 		rc = synaptics_read(this, SYNF(F11_2D, QUERY, 0x06), &buf, 1);
 		if (rc)
 			goto exit;
@@ -745,7 +734,7 @@ static int synaptics_clearpad_set_pen(struct synaptics_clearpad *this)
 		} else {
 			dev_warn(&this->pdev->dev, "pen is not supported\n");
 		}
-	} else if (this->chip == SYN_CHIP_3400) {
+	} else if (this->chip_id == SYN_CHIP_3400) {
 		rc = synaptics_put_bit(this, SYNF(F12_2D, CTRL, 0x07),
 				this->pen_enabled ?
 				PEN_DETECT_F12_INTERRUPT :
@@ -762,7 +751,9 @@ static int synaptics_clearpad_set_glove_mode(struct synaptics_clearpad *this)
 {
 	int rc = 0;
 
-	if (this->chip == SYN_CHIP_3200 || this->chip == SYN_CHIP_3400) {
+	if (this->chip_id == SYN_CHIP_3200 ||
+	    this->chip_id == SYN_CHIP_3400 ||
+	    this->chip_id == SYN_CHIP_7300) {
 		if (this->pdt[SYN_F51_CUSTOM].number
 				== function_value[SYN_F51_CUSTOM])
 			rc = synaptics_put(this, SYNF(F51_CUSTOM,
@@ -819,7 +810,7 @@ static int synaptics_clearpad_prepare_f11_2d(struct synaptics_clearpad *this)
 	if (this->extents.n_bytes_per_object == 0)
 		this->extents.n_bytes_per_object = SYNAPTICS_FINGER_DATA_SIZE;
 
-	if (this->chip == SYN_CHIP_3000) {
+	if (this->chip_id == SYN_CHIP_3000) {
 		/* set reduced reporting mode */
 		this->default_reporting_mode =
 				XY_REPORTING_MODE_REDUCED_REPORTING_MODE;
@@ -1018,7 +1009,7 @@ static int synaptics_clearpad_flash(struct synaptics_clearpad *this);
 static int synaptics_clearpad_initialize(struct synaptics_clearpad *this)
 {
 	int rc;
-	u8 type[2], buf[4];
+	u8 buf[4];
 	struct synaptics_device_info *info = &this->device_info;
 
 	rc = synaptics_clearpad_read_pdt(this);
@@ -1032,17 +1023,11 @@ static int synaptics_clearpad_initialize(struct synaptics_clearpad *this)
 	if (rc)
 		goto exit;
 
-	/* read synaptics chip type */
-	rc = synaptics_read(this, SYNF(F34_FLASH, QUERY, 0x00), type, 2);
-	if (rc)
-		goto exit;
-	this->chip = type[SYN_BOOTLOADER_ID_1];
-
 	/* read device configuration */
 	rc = synaptics_read(this, SYNF(F01_RMI, QUERY, 0x00), (u8 *)info, 21);
 	if (rc)
 		goto exit;
-	if (this->chip >= SYN_CHIP_3200) {
+	if (this->chip_id >= SYN_CHIP_3200) {
 		/* read device status */
 		rc = synaptics_read(this, SYNF(F01_RMI, DATA, 0x00), buf, 1);
 		if (rc)
@@ -1140,7 +1125,7 @@ static int synaptics_flash_enable(struct synaptics_clearpad *this)
 
 	/* write bootloader id to block data */
 	rc = synaptics_write(this, SYNF(F34_FLASH, DATA,
-				(this->chip >= SYN_CHIP_3400) ? 0x01 : 0x02),
+				(this->chip_id == SYN_CHIP_3400) ? 0x01 : 0x02),
 				buf, sizeof(buf));
 	LOG_CHECK(this, "rc=%d\n", rc);
 	if (rc)
@@ -1150,7 +1135,7 @@ static int synaptics_flash_enable(struct synaptics_clearpad *this)
 
 	/* issue a flash program enable */
 	rc = synaptics_put(this, SYNF(F34_FLASH, DATA,
-			(this->chip >= SYN_CHIP_3400) ? 0x02 : 0x12),
+			(this->chip_id == SYN_CHIP_3400) ? 0x02 : 0x12),
 			FLASH_CONTROL_ENABLE_FLASH_PROGRAMMING);
 	LOG_CHECK(this, "rc=%d\n", rc);
 	if (rc)
@@ -1177,13 +1162,13 @@ static int synaptics_flash_program(struct synaptics_clearpad *this)
 
 	/* make sure that we are in programming mode and there are no issues */
 	rc = synaptics_read(this, SYNF(F34_FLASH, DATA,
-			(this->chip >= SYN_CHIP_3400) ? 0x03 : 0x12), buf, 1);
+		(this->chip_id == SYN_CHIP_3400) ? 0x03 : 0x12), buf, 1);
 	if (rc)
 		goto exit;
 	if (buf[0] != FLASH_CONTROL_PROGRAM_ENABLED) {
 		dev_err(&this->pdev->dev,
 		       "failed enabling flash (%s)\n",
-			(this->chip >= SYN_CHIP_3400) ?
+			(this->chip_id == SYN_CHIP_3400) ?
 			synaptics_clearpad_flash_status[buf[0]&7] :
 			synaptics_clearpad_flash_status[(buf[0]>>4)&7]);
 		rc = -EIO;
@@ -1204,7 +1189,7 @@ static int synaptics_flash_program(struct synaptics_clearpad *this)
 
 	/* write bootloader id to block data */
 	rc = synaptics_write(this, SYNF(F34_FLASH, DATA,
-			(this->chip >= SYN_CHIP_3400) ? 0x01 : 0x02), buf, 2);
+		(this->chip_id == SYN_CHIP_3400) ? 0x01 : 0x02), buf, 2);
 	if (rc)
 		goto exit;
 
@@ -1213,12 +1198,12 @@ static int synaptics_flash_program(struct synaptics_clearpad *this)
 	if (this->flash_mode == SYN_FLASH_MODE_NORMAL)
 		/* issue a firmware and configuration erase */
 		rc = synaptics_put(this, SYNF(F34_FLASH, DATA,
-				(this->chip >= SYN_CHIP_3400) ? 0x02 : 0x12),
+				(this->chip_id == SYN_CHIP_3400) ? 0x02 : 0x12),
 				FLASH_CONTROL_ERASE_ALL);
 	else
 		/* issue a configuration erase */
 		rc = synaptics_put(this, SYNF(F34_FLASH, DATA,
-				(this->chip >= SYN_CHIP_3400) ? 0x02 : 0x12),
+				(this->chip_id == SYN_CHIP_3400) ? 0x02 : 0x12),
 				FLASH_CONTROL_ERASE_CONFIGURATION);
 
 	if (rc)
@@ -1250,13 +1235,13 @@ static int synaptics_flash_data(struct synaptics_clearpad *this)
 
 	/* make sure that we are in programming mode and there are no issues */
 	rc = synaptics_read(this, SYNF(F34_FLASH, DATA,
-			(this->chip >= SYN_CHIP_3400) ? 0x03 : 0x12), &buf, 1);
+		(this->chip_id == SYN_CHIP_3400) ? 0x03 : 0x12), &buf, 1);
 	if (rc)
 		goto exit;
 	if (buf != FLASH_CONTROL_PROGRAM_ENABLED) {
 		dev_err(&this->pdev->dev,
 				"failed flashing data (%s)\n",
-				(this->chip >= SYN_CHIP_3400) ?
+				(this->chip_id == SYN_CHIP_3400) ?
 				synaptics_clearpad_flash_status[buf&7] :
 				synaptics_clearpad_flash_status[(buf>>4)&7]);
 		rc = -EIO;
@@ -1278,13 +1263,13 @@ write_block_data:
 
 	/* write block data */
 	rc = synaptics_write(this, SYNF(F34_FLASH, DATA,
-		(this->chip >= SYN_CHIP_3400) ? 0x01 : 0x02), data, len);
+		(this->chip_id == SYN_CHIP_3400) ? 0x01 : 0x02), data, len);
 	if (rc)
 		goto exit;
 
 	/* issue a write data block command */
 	rc = synaptics_put(this, SYNF(F34_FLASH, DATA,
-			(this->chip >= SYN_CHIP_3400) ? 0x02 : 0x12),
+			(this->chip_id == SYN_CHIP_3400) ? 0x02 : 0x12),
 			FLASH_CONTROL_WRITE_FIRMWARE_BLOCK);
 	if (rc)
 		goto exit;
@@ -1321,13 +1306,13 @@ static int synaptics_flash_config(struct synaptics_clearpad *this)
 
 	/* make sure that we are in programming mode and there are no issues */
 	rc = synaptics_read(this, SYNF(F34_FLASH, DATA,
-			(this->chip >= SYN_CHIP_3400) ? 0x03 : 0x12), &buf, 1);
+		(this->chip_id == SYN_CHIP_3400) ? 0x03 : 0x12), &buf, 1);
 	if (rc)
 		goto exit;
 	if (buf != FLASH_CONTROL_PROGRAM_ENABLED) {
 		dev_err(&this->pdev->dev,
 				"failed flashing config (%s)\n",
-				(this->chip >= SYN_CHIP_3400) ?
+				(this->chip_id == SYN_CHIP_3400) ?
 				synaptics_clearpad_flash_status[buf&7] :
 				synaptics_clearpad_flash_status[(buf>>4)&7]);
 		rc = -EIO;
@@ -1349,13 +1334,13 @@ write_block_data:
 
 	/* write block data */
 	rc = synaptics_write(this, SYNF(F34_FLASH, DATA,
-		(this->chip >= SYN_CHIP_3400) ? 0x01 : 0x02), data, len);
+		(this->chip_id == SYN_CHIP_3400) ? 0x01 : 0x02), data, len);
 	if (rc)
 		goto exit;
 
 	/* issue a write configuration block command */
 	rc = synaptics_put(this, SYNF(F34_FLASH, DATA,
-			(this->chip >= SYN_CHIP_3400) ? 0x02 : 0x12),
+			(this->chip_id == SYN_CHIP_3400) ? 0x02 : 0x12),
 			FLASH_CONTROL_WRITE_CONFIGURATION_BLOCK);
 	if (rc)
 		goto exit;
@@ -1383,13 +1368,13 @@ static int synaptics_flash_disable(struct synaptics_clearpad *this)
 
 	/* make sure that we are in programming mode and there are no issues */
 	rc = synaptics_read(this, SYNF(F34_FLASH, DATA,
-			(this->chip >= SYN_CHIP_3400) ? 0x03 : 0x12), &buf, 1);
+		(this->chip_id == SYN_CHIP_3400) ? 0x03 : 0x12), &buf, 1);
 	if (rc)
 		goto exit;
 	if (buf != FLASH_CONTROL_PROGRAM_ENABLED) {
 		dev_err(&this->pdev->dev,
 				"failed flashing config (%s)\n",
-				(this->chip >= SYN_CHIP_3400) ?
+				(this->chip_id == SYN_CHIP_3400) ?
 				synaptics_clearpad_flash_status[buf&7] :
 				synaptics_clearpad_flash_status[(buf>>4)&7]);
 		rc = -EIO;
@@ -1688,14 +1673,6 @@ static int clearpad_vreg_configure(struct synaptics_clearpad *this,
 		}
 		this->vreg_touch_vio = regulator_get(dev, CLEARPAD_VIO);
 		if (!IS_ERR(this->vreg_touch_vio)) {
-			rc = regulator_set_voltage(this->vreg_touch_vio,
-							1800000, 1800000);
-			if (rc) {
-				dev_err(dev,
-					"%s: set voltage vio failed, rc=%d\n",
-					__func__, rc);
-				goto err_put_vio;
-			}
 			rc = clearpad_regulator_handler(this->vreg_touch_vio,
 					dev, __func__, CLEARPAD_VIO, 1);
 			if (rc)
@@ -1703,12 +1680,6 @@ static int clearpad_vreg_configure(struct synaptics_clearpad *this,
 		}
 	} else {
 		if (!IS_ERR(this->vreg_touch_vio)) {
-			rc = regulator_set_voltage(this->vreg_touch_vio,
-					0, 1800000);
-			if (rc)
-				dev_err(dev,
-					"%s: set voltage vio failed, rc=%d\n",
-					__func__, rc);
 			clearpad_regulator_handler(this->vreg_touch_vio,
 					dev, __func__, CLEARPAD_VIO, 0);
 			regulator_put(this->vreg_touch_vio);
@@ -1745,9 +1716,9 @@ static int clearpad_vreg_reset(struct synaptics_clearpad *this)
 	if (rc)
 		goto exit;
 
-	if (this->chip <= SYN_CHIP_3200)
+	if (this->chip_id <= SYN_CHIP_3200 || this->chip_id == SYN_CHIP_7300)
 		usleep_range(10000, 11000);
-	else if (this->chip == SYN_CHIP_3400)
+	else if (this->chip_id == SYN_CHIP_3400)
 		msleep(1000);
 
 	rc = clearpad_vreg_configure(this, 1);
@@ -1854,7 +1825,7 @@ static int synaptics_clearpad_set_power(struct synaptics_clearpad *this)
 
 	LOG_STAT(this, "powered %d, users %d, standby %d\n",
 		 !!(active & SYN_ACTIVE_POWER),
-		 this->input->users + this->input_pen->users,
+		 this->input->users,
 		 !!(active & SYN_STANDBY));
 
 	dev_info(&this->pdev->dev, "%s: state=%s\n", __func__,
@@ -1999,8 +1970,8 @@ static void synaptics_funcarea_initialize(struct synaptics_clearpad *this)
 				pointer_area.y1 -= pointer_data->offset_y;
 				pointer_area.y2 -= pointer_data->offset_y;
 			}
-			input_mt_init_slots(this->input,
-						this->extents.n_fingers);
+			input_set_abs_params(this->input, ABS_MT_TRACKING_ID,
+					0, this->extents.n_fingers, 0, 0);
 			input_set_abs_params(this->input, ABS_MT_POSITION_X,
 					     pointer_area.x1,
 					     pointer_area.x2, 0, 0);
@@ -2023,33 +1994,8 @@ static void synaptics_funcarea_initialize(struct synaptics_clearpad *this)
 				input_set_abs_params(this->input,
 					ABS_MT_ORIENTATION, -1, 1, 0, 0);
 			input_set_abs_params(this->input, ABS_MT_TOOL_TYPE,
-					MT_TOOL_FINGER, MT_TOOL_FINGER, 0, 0);
-
-			input_mt_init_slots(this->input_pen,
-						this->extents.n_fingers);
-			input_set_abs_params(this->input_pen, ABS_MT_POSITION_X,
-					     pointer_area.x1,
-					     pointer_area.x2, 0, 0);
-			input_set_abs_params(this->input_pen, ABS_MT_POSITION_Y,
-					     pointer_area.y1,
-					     pointer_area.y2, 0, 0);
-			if (this->touch_pressure_enabled)
-				input_set_abs_params(this->input_pen,
-					ABS_MT_PRESSURE, 0,
-					SYNAPTICS_MAX_Z_VALUE, 0, 0);
-			if (this->touch_size_enabled) {
-				input_set_abs_params(this->input_pen,
-					ABS_MT_TOUCH_MAJOR, 0,
-					SYNAPTICS_MAX_W_VALUE + 1, 0, 0);
-				input_set_abs_params(this->input_pen,
-					ABS_MT_TOUCH_MINOR, 0,
-					SYNAPTICS_MAX_W_VALUE + 1, 0, 0);
-			}
-			if (this->touch_orientation_enabled)
-				input_set_abs_params(this->input_pen,
-					ABS_MT_ORIENTATION, -1, 1, 0, 0);
-			input_set_abs_params(this->input_pen, ABS_MT_TOOL_TYPE,
-					0, MT_TOOL_PEN, 0, 0);
+					0, this->pen_enabled ? MT_TOOL_PEN :
+							MT_TOOL_FINGER, 0, 0);
 			break;
 		case SYN_FUNCAREA_BUTTON:
 			button = (struct synaptics_button_data *)funcarea->data;
@@ -2123,7 +2069,7 @@ static void synaptics_funcarea_down(struct synaptics_clearpad *this,
 	struct synaptics_button_data *button;
 	struct synaptics_pointer_data *pointer_data;
 	struct synaptics_point *cur = &pointer->cur;
-	struct input_dev *idev;
+	struct input_dev *idev = this->input;
 	bool valid;
 
 	switch (pointer->funcarea->func) {
@@ -2141,7 +2087,6 @@ static void synaptics_funcarea_down(struct synaptics_clearpad *this,
 		}
 		if (cur->tool == SYN_TOOL_PEN) {
 			cur->tool = MT_TOOL_PEN;
-			idev = this->input_pen;
 		} else {
 			/* shift range if glove event */
 			if (cur->tool == SYN_TOOL_GLOVE) {
@@ -2154,7 +2099,6 @@ static void synaptics_funcarea_down(struct synaptics_clearpad *this,
 					cur->z = SYNAPTICS_MAX_Z_VALUE;
 			}
 			cur->tool = MT_TOOL_FINGER;
-			idev = this->input;
 		}
 		valid = idev->users > 0;
 		LOG_EVENT(this, "%s[%d]: (x,y)=(%d,%d) w=(%d,%d) z=%d t=%d\n",
@@ -2164,8 +2108,8 @@ static void synaptics_funcarea_down(struct synaptics_clearpad *this,
 			break;
 		touch_major = max(cur->wx, cur->wy) + 1;
 		touch_minor = min(cur->wx, cur->wy) + 1;
-		input_mt_slot(idev, cur->id);
-		input_mt_report_slot_state(idev, cur->tool, true);
+		input_report_abs(idev, ABS_MT_TRACKING_ID, cur->id);
+		input_report_abs(idev, ABS_MT_TOOL_TYPE, cur->tool);
 		input_report_abs(idev, ABS_MT_POSITION_X, cur->x);
 		input_report_abs(idev, ABS_MT_POSITION_Y, cur->y);
 		if (this->touch_pressure_enabled)
@@ -2177,6 +2121,7 @@ static void synaptics_funcarea_down(struct synaptics_clearpad *this,
 		if (this->touch_orientation_enabled)
 			input_report_abs(idev, ABS_MT_ORIENTATION,
 				 (cur->wx > cur->wy));
+		input_mt_sync(idev);
 		break;
 	case SYN_FUNCAREA_BUTTON:
 		LOG_EVENT(this, "button\n");
@@ -2194,8 +2139,7 @@ static void synaptics_funcarea_up(struct synaptics_clearpad *this,
 				  struct synaptics_pointer *pointer)
 {
 	struct synaptics_button_data *button;
-	struct input_dev *idev;
-	struct synaptics_point *cur = &pointer->cur;
+	struct input_dev *idev = this->input;
 	bool valid;
 
 	switch (pointer->funcarea->func) {
@@ -2203,16 +2147,11 @@ static void synaptics_funcarea_up(struct synaptics_clearpad *this,
 		LOG_EVENT(this, "insensible up\n");
 		break;
 	case SYN_FUNCAREA_POINTER:
-		if (cur->tool == MT_TOOL_FINGER)
-			idev = this->input;
-		else
-			idev = this->input_pen;
 		valid = idev->users > 0;
 		LOG_EVENT(this, "%s up\n", valid ? "pt" : "unused pt");
 		if (!valid)
 			break;
-		input_mt_slot(idev, pointer->cur.id);
-		input_mt_report_slot_state(idev, pointer->cur.tool, false);
+		input_mt_sync(idev);
 		break;
 	case SYN_FUNCAREA_BUTTON:
 		LOG_EVENT(this, "button up\n");
@@ -2306,8 +2245,6 @@ static void synaptics_funcarea_invalidate_all(struct synaptics_clearpad *this)
 	synaptics_funcarea_report_extra_events(this);
 	if (this->input->users)
 		input_sync(this->input);
-	if (this->input_pen->users)
-		input_sync(this->input_pen);
 }
 
 static void synaptics_parse_finger_n_f11(struct synaptics_clearpad *this,
@@ -2512,7 +2449,7 @@ static int synaptics_clearpad_handle_gesture(struct synaptics_clearpad *this)
 	int rc;
 
 	rc = synaptics_read(this, SYNF(F11_2D, DATA,
-			this->easy_wakeup_config.large_panel ? 0x39 : 0x43),
+			this->easy_wakeup_config.large_panel ? 0x36 : 0x43),
 			&wakeint, 1);
 	if (rc)
 		goto exit;
@@ -2525,23 +2462,7 @@ static int synaptics_clearpad_handle_gesture(struct synaptics_clearpad *this)
 	else
 		goto exit;
 
-	switch (wakeint) {
-	case XY_LPWG_STATUS_DOUBLE_TAP_DETECTED:
-		rc = evgen_execute(this->input, this->evgen_blocks,
-					"double_tap");
-		break;
-	case XY_LPWG_STATUS_SWIPE_DETECTED:
-		rc = evgen_execute(this->input, this->evgen_blocks,
-					"single_swipe");
-		break;
-	case XY_LPWG_STATUS_TWO_SWIPE_DETECTED:
-		rc = evgen_execute(this->input, this->evgen_blocks,
-					"two_swipe");
-		break;
-	default:
-		dev_info(&this->pdev->dev, "Gesture %d Not supported", wakeint);
-		break;
-	}
+	evdt_execute(this->evdt_node, this->input, wakeint);
 exit:
 	return rc;
 }
@@ -2614,7 +2535,7 @@ static int synaptics_clearpad_process_F11_2D(struct synaptics_clearpad *this)
 		goto exit;
 	}
 
-	if (this->chip == SYN_CHIP_3000) {
+	if (this->chip_id == SYN_CHIP_3000) {
 		rc = synaptics_read(this, SYNF(F11_2D, DATA, 0x35), &status, 1);
 		LOG_CHECK(this, "rc=%d F11_2D_DATA09=0x%x\n", rc, status);
 		if (rc)
@@ -2631,8 +2552,6 @@ static int synaptics_clearpad_process_F11_2D(struct synaptics_clearpad *this)
 	synaptics_funcarea_report_extra_events(this);
 	if (this->input->users)
 		input_sync(this->input);
-	if (this->input_pen->users)
-		input_sync(this->input_pen);
 exit:
 	return rc;
 }
@@ -2657,8 +2576,6 @@ static int synaptics_clearpad_process_F12_2D(struct synaptics_clearpad *this)
 		goto exit;
 	if (this->input->users)
 		input_sync(this->input);
-	if (this->input_pen->users)
-		input_sync(this->input_pen);
 exit:
 	return rc;
 }
@@ -3118,6 +3035,14 @@ static ssize_t synaptics_clearpad_state_show(struct device *dev,
 	else if (!strncmp(attr->attr.name, __stringify(glove), PAGE_SIZE))
 		snprintf(buf, PAGE_SIZE,
 			"%d", this->glove_enabled);
+	else if (!strncmp(attr->attr.name, __stringify(screen_status),
+								PAGE_SIZE))
+		snprintf(buf, PAGE_SIZE,
+			"%d", this->screen_status);
+	else if (!strncmp(attr->attr.name, __stringify(charger_status),
+								PAGE_SIZE))
+		snprintf(buf, PAGE_SIZE,
+			"%d", this->charger_status);
 	else
 		snprintf(buf, PAGE_SIZE, "illegal sysfs file");
 	return strnlen(buf, PAGE_SIZE);
@@ -3273,6 +3198,64 @@ static ssize_t synaptics_clearpad_wakeup_gesture_store(struct device *dev,
 	return strnlen(buf, PAGE_SIZE);
 }
 
+static ssize_t synaptics_screen_status_store(struct device *dev,
+		struct device_attribute *attr,
+		const char *buf, size_t size)
+{
+	struct synaptics_clearpad *this = dev_get_drvdata(dev);
+
+	dev_dbg(&this->pdev->dev, "%s: start\n", __func__);
+
+	LOCK(this);
+
+	sscanf(buf, "%d", &this->screen_status);
+	dev_dbg(&this->pdev->dev, "%s: screen_status = %d\n", __func__,
+				this->screen_status);
+
+	if (this->screen_status) {
+		if (!(this->active & SYN_ACTIVE_POWER))
+			synaptics_clearpad_resume(&this->pdev->dev);
+	} else {
+		if (this->active & SYN_ACTIVE_POWER)
+			synaptics_clearpad_suspend(&this->pdev->dev);
+	}
+
+	UNLOCK(this);
+
+	synaptics_clearpad_set_power(this);
+
+	return strnlen(buf, PAGE_SIZE);
+}
+
+static ssize_t synaptics_charger_status_store(struct device *dev,
+		struct device_attribute *attr,
+		const char *buf, size_t size)
+{
+	int rc;
+	struct synaptics_clearpad *this = dev_get_drvdata(dev);
+
+	dev_dbg(&this->pdev->dev, "%s: start\n", __func__);
+
+	LOCK(this);
+
+	sscanf(buf, "%d", &this->charger_status);
+	dev_dbg(&this->pdev->dev, "%s: charger_status = %d\n", __func__,
+				this->charger_status);
+
+	if (this->charger_status)
+		rc = synaptics_put_bit(this, SYNF(F01_RMI, CTRL, 0x00),
+			DEVICE_CONTROL_CHARGER_CONNECTED,
+			DEVICE_CONTROL_CHARGER_CONNECTED);
+	else
+		rc = synaptics_put_bit(this, SYNF(F01_RMI, CTRL, 0x00),
+			DEVICE_CONTROL_CHARGER_NOT_CONNECTED,
+			DEVICE_CONTROL_CHARGER_CONNECTED);
+
+	UNLOCK(this);
+
+	return strnlen(buf, PAGE_SIZE);
+}
+
 static struct device_attribute clearpad_sysfs_attrs[] = {
 	__ATTR(fwinfo, S_IRUGO, synaptics_clearpad_state_show, 0),
 	__ATTR(fwfamily, S_IRUGO, synaptics_clearpad_state_show, 0),
@@ -3287,6 +3270,10 @@ static struct device_attribute clearpad_sysfs_attrs[] = {
 				synaptics_clearpad_pen_enabled_store),
 	__ATTR(glove, S_IRUGO | S_IWUSR, synaptics_clearpad_state_show,
 				synaptics_clearpad_glove_enabled_store),
+	__ATTR(screen_status, S_IRUGO | S_IWUSR, synaptics_clearpad_state_show,
+				synaptics_screen_status_store),
+	__ATTR(charger_status, S_IRUGO | S_IWUSR, synaptics_clearpad_state_show,
+				synaptics_charger_status_store)
 };
 
 static struct device_attribute clearpad_wakeup_gesture_attr =
@@ -3319,9 +3306,16 @@ static void remove_sysfs_entries(struct synaptics_clearpad *this)
 		device_remove_file(&this->input->dev, &clearpad_sysfs_attrs[i]);
 }
 
-static void clearpad_touch_config_dt(struct synaptics_clearpad *this)
+static int clearpad_touch_config_dt(struct synaptics_clearpad *this)
 {
+	int rc = 0;
 	struct device_node *devnode = this->bdata->of_node;
+
+	if (of_property_read_u32(devnode, "chip_id", &this->chip_id)) {
+		dev_err(&this->pdev->dev, "no chip_id config\n");
+		rc = -EINVAL;
+		goto exit;
+	}
 
 	if (of_property_read_u32(devnode, "num_sensor_rx",
 		&this->num_sensor_rx))
@@ -3360,34 +3354,64 @@ static void clearpad_touch_config_dt(struct synaptics_clearpad *this)
 		&this->extents.n_fingers))
 		dev_warn(&this->pdev->dev, "no preset_n_fingers config\n");
 
-	if (of_property_read_u32(devnode, "preset_n_bytes_per_object",
-		&this->extents.n_bytes_per_object))
-		dev_warn(&this->pdev->dev, "no n_bytes_per_object config\n");
-
 	if (of_property_read_u32(devnode, "por_delay_after",
 		&this->por_delay_after))
 		dev_warn(&this->pdev->dev, "no por_delay_after config\n");
+
+	if (of_property_read_bool(devnode, "large_panel"))
+		this->easy_wakeup_config.large_panel = true;
+	else
+		dev_warn(&this->pdev->dev, "no large_panel\n");
+
+	if (of_property_read_u32(devnode, "wakeup_gesture_support",
+		&this->wakeup_gesture_support))
+		dev_warn(&this->pdev->dev, "no wakeup_gesture_support\n");
+
+	if (of_property_read_u32(devnode, "wakeup_gesture_timeout",
+		&this->easy_wakeup_config.timeout_delay))
+		dev_warn(&this->pdev->dev, "no wakeup_gesture_timeout\n");
+
+exit:
+	return rc;
 }
 
-static int synaptics_clearpad_input_init(struct synaptics_clearpad *this,
-					struct input_dev *idev)
+static int synaptics_clearpad_input_init(struct synaptics_clearpad *this)
 {
 	int rc;
 
-	set_bit(EV_ABS, idev->evbit);
+	this->input = input_allocate_device();
+	if (!this->input) {
+		rc = -ENOMEM;
+		goto exit;
+	}
 
-	set_bit(ABS_MT_TRACKING_ID, idev->absbit);
-	set_bit(ABS_MT_TOOL_TYPE, idev->absbit);
+	input_set_drvdata(this->input, this);
+
+	this->input->open = synaptics_clearpad_device_open;
+	this->input->close = synaptics_clearpad_device_close;
+	this->input->name = CLEARPAD_NAME;
+	this->input->id.vendor = SYNAPTICS_CLEARPAD_VENDOR;
+	this->input->id.product = 1;
+	this->input->id.version = 1;
+	this->input->id.bustype = this->bdata->bustype;
+
+	synaptics_funcarea_initialize(this);
+
+	set_bit(EV_ABS, this->input->evbit);
+
+	set_bit(ABS_MT_TRACKING_ID, this->input->absbit);
+	set_bit(ABS_MT_TOOL_TYPE, this->input->absbit);
 
 	dev_info(&this->pdev->dev, "Touch area [%d, %d, %d, %d]\n",
 		 this->extents.x_min, this->extents.y_min,
 		 this->extents.x_max, this->extents.y_max);
 
-	rc = input_register_device(idev);
+	rc = input_register_device(this->input);
 	if (rc) {
 		dev_err(&this->pdev->dev,
 		       "failed to register device\n");
-		input_set_drvdata(idev, NULL);
+		input_set_drvdata(this->input, NULL);
+		input_free_device(this->input);
 		goto exit;
 	}
 
@@ -3395,35 +3419,33 @@ exit:
 	return rc;
 }
 
-static int synaptics_clearpad_input_ev_init(struct synaptics_clearpad *this)
+static void synaptics_clearpad_input_ev_init(struct synaptics_clearpad *this)
 {
 	int rc = 0;
 
-	this->evgen_blocks = clearpad_evgen_block_get(
-		this->device_info.customer_family,
-		this->device_info.firmware_revision_major);
-	dev_info(&this->pdev->dev, "evgen_blocks is %s\n",
-		 this->evgen_blocks ? "used" : "null");
-	evgen_initialize(this->input, this->evgen_blocks);
+	if (this->wakeup_gesture_support) {
+		this->evdt_node = evdt_initialize(this->bdata->dev, this->input,
+						SYNAPTICS_WAKEUP_GESTURE);
+		if (!this->evdt_node) {
+			dev_err(&this->pdev->dev, "no wakeup_gesture dt\n");
+		} else {
+			rc = device_create_file(&this->input->dev,
+					&clearpad_wakeup_gesture_attr);
+			if (rc)
+				dev_err(&this->pdev->dev,
+					"sysfs_create_file failed: %d\n", rc);
 
-	if (this->evgen_blocks) {
-		rc = device_create_file(&this->input->dev,
-				&clearpad_wakeup_gesture_attr);
-		if (rc)
-			dev_err(&this->pdev->dev,
-				"sysfs_create_file failed: %d\n", rc);
+			dev_info(&this->pdev->dev, "Touch Wakeup Feature OK\n");
+			device_init_wakeup(&this->pdev->dev, 0);
+		}
 	}
-
-	return rc;
 }
 
-static int synaptics_clearpad_suspend(struct device *dev)
+static void synaptics_clearpad_suspend(struct device *dev)
 {
 	struct synaptics_clearpad *this = dev_get_drvdata(dev);
-	int rc = 0;
 	bool go_suspend;
 
-	LOCK(this);
 	go_suspend = (this->task != SYN_TASK_NO_SUSPEND);
 	if (go_suspend)
 		this->active |= SYN_STANDBY;
@@ -3432,21 +3454,13 @@ static int synaptics_clearpad_suspend(struct device *dev)
 
 	LOG_STAT(this, "active: %x (task: %s)\n",
 		 this->active, task_name[this->task]);
-	UNLOCK(this);
-
-	rc = synaptics_clearpad_set_power(this);
-	if (rc && this->reset_count >= SYNAPTICS_RETRY_NUM_OF_RESET)
-		rc = 0; /* stop retry of recovery */
-	return rc;
 }
 
-static int synaptics_clearpad_resume(struct device *dev)
+static void synaptics_clearpad_resume(struct device *dev)
 {
 	struct synaptics_clearpad *this = dev_get_drvdata(dev);
-	int rc = 0;
 	bool go_resume;
 
-	LOCK(this);
 	go_resume = !!(this->active & (SYN_STANDBY | SYN_STANDBY_AFTER_TASK));
 	if (go_resume)
 		this->active &= ~(SYN_STANDBY | SYN_STANDBY_AFTER_TASK);
@@ -3455,12 +3469,6 @@ static int synaptics_clearpad_resume(struct device *dev)
 		 this->active, task_name[this->task]);
 
 	synaptics_funcarea_invalidate_all(this);
-	UNLOCK(this);
-
-	rc = synaptics_clearpad_set_power(this);
-	if (rc && this->reset_count >= SYNAPTICS_RETRY_NUM_OF_RESET)
-		rc = 0; /* stop retry of recovery */
-	return rc;
 }
 
 static int synaptics_clearpad_pm_suspend(struct device *dev)
@@ -3478,12 +3486,16 @@ static int synaptics_clearpad_pm_suspend(struct device *dev)
 	this->dev_busy = true;
 	spin_unlock_irqrestore(&this->slock, flags);
 
-#ifdef CONFIG_FB
-	if (this->active & SYN_ACTIVE_POWER)
-#endif
-		rc = synaptics_clearpad_suspend(&this->pdev->dev);
-	if (rc)
-		return rc;
+	if (this->active & SYN_ACTIVE_POWER) {
+		synaptics_clearpad_suspend(&this->pdev->dev);
+		rc = synaptics_clearpad_set_power(this);
+		if (rc) {
+			if (this->reset_count >= SYNAPTICS_RETRY_NUM_OF_RESET)
+				rc = 0; /* stop retry of recovery */
+			else
+				return rc;
+		}
+	}
 
 	if (device_may_wakeup(dev)) {
 		enable_irq_wake(this->irq);
@@ -3515,10 +3527,6 @@ static int synaptics_clearpad_pm_resume(struct device *dev)
 		rc = synaptics_clearpad_process_irq(this);
 	}
 
-#ifdef CONFIG_FB
-	if (irq_pending)
-#endif
-		(void)(rc ? rc : synaptics_clearpad_resume(&this->pdev->dev));
 	return 0;
 }
 
@@ -3531,51 +3539,6 @@ static int synaptics_clearpad_pm_suspend_noirq(struct device *dev)
 	}
 	return 0;
 }
-
-#ifdef CONFIG_FB
-static void synaptics_notify_resume(struct work_struct *work)
-{
-	struct synaptics_clearpad *this = container_of(work,
-			struct synaptics_clearpad, notify_resume);
-
-	if (!(this->active & SYN_ACTIVE_POWER))
-		synaptics_clearpad_resume(&this->pdev->dev);
-}
-
-static void synaptics_notify_suspend(struct work_struct *work)
-{
-	struct synaptics_clearpad *this = container_of(work,
-			struct synaptics_clearpad, notify_suspend);
-
-	if (this->active & SYN_ACTIVE_POWER)
-		synaptics_clearpad_suspend(&this->pdev->dev);
-}
-
-static int synaptics_fb_notifier_callback(struct notifier_block *self,
-				unsigned long event, void *data)
-{
-	struct fb_event *evdata = data;
-	int *blank;
-	struct synaptics_clearpad *this =
-		container_of(self, struct synaptics_clearpad, fb_notif);
-
-	if (evdata && evdata->data && event == FB_EVENT_BLANK && this &&
-			this->pdev) {
-		blank = evdata->data;
-		if (*blank == FB_BLANK_UNBLANK) {
-			cancel_work_sync(&this->notify_suspend);
-			cancel_work_sync(&this->notify_resume);
-			schedule_work(&this->notify_resume);
-		} else if (*blank == FB_BLANK_POWERDOWN) {
-			cancel_work_sync(&this->notify_resume);
-			cancel_work_sync(&this->notify_suspend);
-			schedule_work(&this->notify_suspend);
-		}
-	}
-
-	return 0;
-}
-#endif
 
 #ifdef CONFIG_DEBUG_FS
 static int clearpad_get_num_tx_physical(struct synaptics_clearpad *this,
@@ -3737,22 +3700,22 @@ static void synaptics_clearpad_analog_test(struct synaptics_clearpad *this,
 			mode != F54_16_IMAGE_REPORT &&
 			mode != F54_AUTOSCAN_REPORT) {
 		rc = synaptics_put_bit(this, SYNF(F54_ANALOG, CTRL,
-				(this->chip >= SYN_CHIP_3400) ? 0x17 : 0x08),
+				(this->chip_id == SYN_CHIP_3400) ? 0x17 : 0x08),
 				0, ANALOG_CONTROL_CBC_CAPACITANCE);
 		if (rc)
 			goto err_set_irq_xy;
 		rc = synaptics_put_bit(this, SYNF(F54_ANALOG, CTRL,
-				(this->chip >= SYN_CHIP_3400) ? 0x17 : 0x08),
+				(this->chip_id == SYN_CHIP_3400) ? 0x17 : 0x08),
 				0, ANALOG_CONTROL_CBC_POLARITY);
 		if (rc)
 			goto err_set_irq_xy;
 		rc = synaptics_put_bit(this, SYNF(F54_ANALOG, CTRL,
-				(this->chip >= SYN_CHIP_3400) ? 0x17 : 0x08),
+				(this->chip_id == SYN_CHIP_3400) ? 0x17 : 0x08),
 				0, ANALOG_CONTROL_CBC_XMTR_CARRIER_SELECT);
 		if (rc)
 			goto err_set_irq_xy;
 		rc = synaptics_put_bit(this, SYNF(F54_ANALOG, CTRL,
-				(this->chip >= SYN_CHIP_3400) ? 0x14 : 0x51),
+				(this->chip_id == SYN_CHIP_3400) ? 0x14 : 0x51),
 				ANALOG_CONTROL_NO_SIGNALCLARITY,
 				ANALOG_CONTROL_NO_SIGNALCLARITY);
 		if (rc)
@@ -4141,13 +4104,11 @@ static int __devinit clearpad_probe(struct platform_device *pdev)
 		goto err_free;
 	}
 
-	if (this->bdata->of_node)
-		clearpad_touch_config_dt(this);
-
-	if (this->pdata->easy_wakeup_config)
-		memcpy(&this->easy_wakeup_config,
-			this->pdata->easy_wakeup_config,
-			sizeof(this->easy_wakeup_config));
+	if (this->bdata->of_node) {
+		rc = clearpad_touch_config_dt(this);
+		if (rc)
+			goto err_free;
+	}
 
 #ifdef CONFIG_TOUCHSCREEN_CLEARPAD_RMI_DEV
 	if (!cdata->rmi_dev) {
@@ -4201,72 +4162,23 @@ static int __devinit clearpad_probe(struct platform_device *pdev)
 	rc = synaptics_clearpad_initialize(this);
 	UNLOCK(this);
 	if (rc) {
-		dev_err(&this->pdev->dev, "faild clearpad initialization\n");
+		dev_err(&this->pdev->dev, "failed clearpad initialization\n");
 		retry = true;
 		goto err_gpio_teardown;
 	}
 
-	this->input = input_allocate_device();
-	if (!this->input) {
-		rc = -ENOMEM;
-		goto err_gpio_teardown;
-	}
-
-	input_set_drvdata(this->input, this);
-
-	this->input->open = synaptics_clearpad_device_open;
-	this->input->close = synaptics_clearpad_device_close;
-	this->input->name = CLEARPAD_NAME;
-	this->input->id.vendor = SYNAPTICS_CLEARPAD_VENDOR;
-	this->input->id.product = 1;
-	this->input->id.version = 1;
-	this->input->id.bustype = this->bdata->bustype;
-
-	this->input_pen = input_allocate_device();
-	if (!this->input_pen) {
-		rc = -ENOMEM;
-		goto err_input_device;
-	}
-
-	input_set_drvdata(this->input_pen, this);
-
-	this->input_pen->name = "clearpad_pen";
-
-	synaptics_funcarea_initialize(this);
-
-	rc = synaptics_clearpad_input_init(this, this->input);
-	if (rc) {
-		input_free_device(this->input);
-		goto err_gpio_teardown;
-	}
-
-	rc = synaptics_clearpad_input_init(this, this->input_pen);
-	if (rc) {
-		input_free_device(this->input_pen);
-		goto err_input_device;
-	}
-
-	rc = synaptics_clearpad_input_ev_init(this);
+	rc = synaptics_clearpad_input_init(this);
 	if (rc)
-		goto err_input_device_pen;
+		goto err_gpio_teardown;
+
+	synaptics_clearpad_input_ev_init(this);
 
 	this->state = SYN_STATE_RUNNING;
-
-#ifdef CONFIG_FB
-	this->fb_notif.notifier_call = synaptics_fb_notifier_callback;
-	rc = fb_register_client(&this->fb_notif);
-	if (rc) {
-		dev_err(&this->pdev->dev, "Unable to register fb_notifier\n");
-	} else {
-		INIT_WORK(&this->notify_resume, synaptics_notify_resume);
-		INIT_WORK(&this->notify_suspend, synaptics_notify_suspend);
-	}
-#endif
 
 	/* sysfs */
 	rc = create_sysfs_entries(this);
 	if (rc)
-		goto err_unregister_fb;
+		goto err_input_device;
 
 #ifdef CONFIG_DEBUG_FS
 	/* debugfs */
@@ -4301,6 +4213,13 @@ static int __devinit clearpad_probe(struct platform_device *pdev)
 		goto err_irq;
 	}
 
+	if (this->chip_id == SYN_CHIP_3200 || this->chip_id == SYN_CHIP_7300) {
+		rc = synaptics_put_bit(this, SYNF(F11_2D, COMMAND, 0x00),
+				DEVICE_COMMAND_REZERO, DEVICE_COMMAND_REZERO);
+		if (rc)
+			goto err_irq;
+	}
+
 	goto exit;
 
 err_irq:
@@ -4312,12 +4231,6 @@ err_sysfs_remove_group:
 	debugfs_remove_recursive(this->debugfs);
 #endif
 	remove_sysfs_entries(this);
-err_unregister_fb:
-#ifdef CONFIG_FB
-	fb_unregister_client(&this->fb_notif);
-#endif
-err_input_device_pen:
-	input_unregister_device(this->input_pen);
 err_input_device:
 	input_unregister_device(this->input);
 err_gpio_teardown:
@@ -4362,13 +4275,7 @@ static int __devexit clearpad_remove(struct platform_device *pdev)
 	debugfs_remove_recursive(this->debugfs);
 #endif
 	remove_sysfs_entries(this);
-#ifdef CONFIG_FB
-	fb_unregister_client(&this->fb_notif);
-	cancel_work_sync(&this->notify_resume);
-	cancel_work_sync(&this->notify_suspend);
-#endif
 	input_unregister_device(this->input);
-	input_unregister_device(this->input_pen);
 	clearpad_gpio_configure(this, 0);
 	clearpad_vreg_configure(this, 0);
 #ifdef CONFIG_TOUCHSCREEN_CLEARPAD_RMI_DEV

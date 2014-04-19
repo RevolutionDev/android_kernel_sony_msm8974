@@ -47,119 +47,6 @@
    will result in the below table size to increase by 10 times */
 static const struct qpnp_vadc_map_pt adcmap_btm_threshold[] = {
 	{-300,	1686},
-	{-290,	1680},
-	{-280,	1673},
-	{-270,	1666},
-	{-260,	1658},
-	{-250,	1650},
-	{-240,	1642},
-	{-230,	1634},
-	{-220,	1625},
-	{-210,	1616},
-	{-200,	1606},
-	{-190,	1597},
-	{-180,	1586},
-	{-170,	1576},
-	{-160,	1565},
-	{-150,	1554},
-	{-140,	1542},
-	{-130,	1530},
-	{-120,	1518},
-	{-110,	1505},
-	{-100,	1492},
-	{-90,	1478},
-	{-80,	1464},
-	{-70,	1450},
-	{-60,	1436},
-	{-50,	1421},
-	{-40,	1406},
-	{-30,	1390},
-	{-20,	1374},
-	{-10,	1358},
-	{0,	1342},
-	{10,	1326},
-	{20,	1309},
-	{30,	1292},
-	{40,	1275},
-	{50,	1257},
-	{60,	1240},
-	{70,	1222},
-	{80,	1204},
-	{90,	1186},
-	{100,	1168},
-	{110,	1150},
-	{120,	1132},
-	{130,	1114},
-	{140,	1096},
-	{150,	1078},
-	{160,	1060},
-	{170,	1042},
-	{180,	1024},
-	{190,	1006},
-	{200,	988},
-	{210,	971},
-	{220,	954},
-	{230,	936},
-	{240,	919},
-	{250,	902},
-	{260,	886},
-	{270,	869},
-	{280,	853},
-	{290,	837},
-	{300,	821},
-	{310,	806},
-	{320,	791},
-	{330,	776},
-	{340,	761},
-	{350,	747},
-	{360,	733},
-	{370,	719},
-	{380,	705},
-	{390,	692},
-	{400,	679},
-	{410,	667},
-	{420,	654},
-	{430,	642},
-	{440,	631},
-	{450,	619},
-	{460,	608},
-	{470,	597},
-	{480,	587},
-	{490,	576},
-	{500,	566},
-	{510,	557},
-	{520,	547},
-	{530,	538},
-	{540,	529},
-	{550,	521},
-	{560,	512},
-	{570,	504},
-	{580,	496},
-	{590,	489},
-	{600,	481},
-	{610,	474},
-	{620,	467},
-	{630,	460},
-	{640,	454},
-	{650,	447},
-	{660,	441},
-	{670,	435},
-	{680,	429},
-	{690,	424},
-	{700,	418},
-	{710,	413},
-	{720,	408},
-	{730,	403},
-	{740,	398},
-	{750,	394},
-	{760,	389},
-	{770,	385},
-	{780,	381},
-	{790,	377}
-};
-
-static const struct qpnp_vadc_map_pt adcmap_btm_threshold2[] = {
-	{-300,	1686},
 	{-290,	1679},
 	{-280,	1672},
 	{-270,	1665},
@@ -268,7 +155,7 @@ static const struct qpnp_vadc_map_pt adcmap_btm_threshold2[] = {
 	{760,	321},
 	{770,	316},
 	{780,	312},
-	{790,	307}
+	{790,	307},
 };
 
 static const struct qpnp_vadc_map_pt adcmap_qrd_btm_threshold[] = {
@@ -547,8 +434,6 @@ static const struct qpnp_vadc_map_pt adcmap_emmc_therm[] = {
 	{44,	1250}
 };
 
-static bool adc_use_old_batt_therm_table;
-
 static int32_t qpnp_adc_map_voltage_temp(const struct qpnp_vadc_map_pt *pts,
 		uint32_t tablesize, int32_t input, int64_t *output)
 {
@@ -803,11 +688,8 @@ int32_t qpnp_adc_scale_batt_therm(struct qpnp_vadc_chip *chip,
 			adc_properties, chan_properties);
 
 	return qpnp_adc_map_temp_voltage(
-			adc_use_old_batt_therm_table ?
-			adcmap_btm_threshold : adcmap_btm_threshold2,
-			adc_use_old_batt_therm_table ?
-			ARRAY_SIZE(adcmap_btm_threshold) :
-			ARRAY_SIZE(adcmap_btm_threshold2),
+			adcmap_btm_threshold,
+			ARRAY_SIZE(adcmap_btm_threshold),
 			bat_voltage,
 			&adc_chan_result->physical);
 }
@@ -1245,11 +1127,8 @@ int32_t qpnp_adc_btm_scaler(struct qpnp_vadc_chip *chip,
 	pr_debug("warm_temp:%d and cool_temp:%d\n", param->high_temp,
 				param->low_temp);
 	rc = qpnp_adc_map_voltage_temp(
-		adc_use_old_batt_therm_table ?
-		adcmap_btm_threshold : adcmap_btm_threshold2,
-		adc_use_old_batt_therm_table ?
-		ARRAY_SIZE(adcmap_btm_threshold) :
-		ARRAY_SIZE(adcmap_btm_threshold2),
+		adcmap_btm_threshold,
+		ARRAY_SIZE(adcmap_btm_threshold),
 		(param->low_temp),
 		&low_output);
 	if (rc) {
@@ -1263,11 +1142,8 @@ int32_t qpnp_adc_btm_scaler(struct qpnp_vadc_chip *chip,
 	low_output += btm_param.adc_gnd;
 
 	rc = qpnp_adc_map_voltage_temp(
-		adc_use_old_batt_therm_table ?
-		adcmap_btm_threshold : adcmap_btm_threshold2,
-		adc_use_old_batt_therm_table ?
-		ARRAY_SIZE(adcmap_btm_threshold) :
-		ARRAY_SIZE(adcmap_btm_threshold2),
+		adcmap_btm_threshold,
+		ARRAY_SIZE(adcmap_btm_threshold),
 		(param->high_temp),
 		&high_output);
 	if (rc) {
@@ -1461,9 +1337,3 @@ int32_t qpnp_adc_get_devicetree_data(struct spmi_device *spmi,
 	return 0;
 }
 EXPORT_SYMBOL(qpnp_adc_get_devicetree_data);
-
-void qpnp_adc_therm_table_sel(bool val)
-{
-	adc_use_old_batt_therm_table = val;
-}
-EXPORT_SYMBOL(qpnp_adc_therm_table_sel);

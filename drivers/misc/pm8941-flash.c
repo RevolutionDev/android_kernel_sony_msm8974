@@ -74,6 +74,10 @@
 #define ENABLE_SELF_CHECK	(1 << 7)
 #define DISABLE_SELF_CHECK	(0 << 7)
 
+#define THERMAL_DERATE	0x52
+#define ENABLE_THERMAL_DERATE	(1 << 7)
+#define DISABLE_THERMAL_DERATE	(0 << 7)
+
 #define VPH_PWR_DROOP	0x5A
 
 #define SEC_ACCESS	0xD0
@@ -819,6 +823,14 @@ static int __devinit pm8941_flash_initialize(struct pm8941_flash_data *data)
 	rc = rc ? rc : pm_reg_write(data, SEC_ACCESS, DISABLE_SEC_ACCESS);
 	if (rc) {
 		pm8941_dev_err(data, "Disable watchdog failed(%d)\n", rc);
+		return rc;
+	}
+
+	/* Disable thermal derate */
+	rc = rc ? rc : pm_reg_write(data, THERMAL_DERATE,
+		DISABLE_THERMAL_DERATE);
+	if (rc) {
+		pm8941_dev_err(data, "Disable thermal derate failed(%d)\n", rc);
 		return rc;
 	}
 

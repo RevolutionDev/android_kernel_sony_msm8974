@@ -30,8 +30,8 @@
 
 /* Default idle timeout for MMC devices: 10 seconds. */
 #define RUNTIME_SUSPEND_DELAY_MS 10000
-/* Default idle timeout for SD cards: 50 seconds. */
-#define RUNTIME_SDCARD_SUSPEND_DELAY_MS 50000
+/* Default idle timeout for SD cards: 5 minutes. */
+#define RUNTIME_SDCARD_SUSPEND_DELAY_MS 300000
 
 static ssize_t mmc_type_show(struct device *dev,
 	struct device_attribute *attr, char *buf)

@@ -32,6 +32,18 @@
 #define fb_size(fb)	(fb_width(fb) * fb_height(fb) * fb_depth(fb))
 #define INIT_IMAGE_FILE "/logo.rle"
 
+static bool display_on_in_boot;
+
+static int __init continous_splash_setup(char *str)
+{
+	if (!str)
+		return 0;
+	if (!strncmp(str, "on", 2))
+		display_on_in_boot = true;
+	return 0;
+}
+__setup("display_status=", continous_splash_setup);
+
 static void memset16(void *_ptr, unsigned short val, unsigned count)
 {
 	unsigned short *ptr = _ptr;
@@ -154,7 +166,9 @@ static void __init draw_logo(void)
 
 int __init logo_init(void)
 {
-	if (!load_565rle_image(INIT_IMAGE_FILE))
+	if (display_on_in_boot)
+		printk(KERN_INFO "Skip drawing logo. Already drawn in boot.\n");
+	else if (!load_565rle_image(INIT_IMAGE_FILE))
 		draw_logo();
 
 	return 0;

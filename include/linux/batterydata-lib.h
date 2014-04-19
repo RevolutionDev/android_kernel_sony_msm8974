@@ -124,6 +124,12 @@ struct bms_battery_data {
 	int			cutoff_uv;
 	int			iterm_ua;
 	int			batt_id_kohm;
+	unsigned int		aging_fcc;
+	struct single_row_lut	*aging_fcc_temp_lut;
+	struct pc_temp_ocv_lut	*aging_pc_temp_ocv_lut;
+	struct sf_lut		*aging_rbatt_sf_lut;
+	int			aging_default_rbatt_mohm;
+	int			aging_flat_ocv_threshold_uv;
 };
 
 #if defined(CONFIG_PM8921_BMS) || \

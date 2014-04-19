@@ -59,10 +59,6 @@
 #define QPNP_PON_TRIGGER_EN(base)		(base + 0x80)
 #define QPNP_PON_S3_DBC_CTL(base)		(base + 0x75)
 
-#define QPNP_PON_SW_RESET_S2_CTL(base)	(base + 0x62)
-#define QPNP_PON_SW_RESET_S2_CTL2(base)	(base + 0x63)
-#define QPNP_PON_SW_RESET_GO(base)	(base + 0x64)
-
 #define QPNP_PON_WARM_RESET_TFT			BIT(4)
 
 #define QPNP_PON_RESIN_PULL_UP			BIT(0)
@@ -86,12 +82,6 @@
 #define QPNP_PON_WD_EN			BIT(7)
 #define QPNP_PON_RESET_EN			BIT(7)
 #define QPNP_PON_POWER_OFF_MASK			0xF
-
-#define QPNP_PON_SW_RESET_S2_CTL_MASK			(0xFF)
-#define QPNP_PON_SW_RESET_S2_CTL_DVDD_HARD_RESET	(0x88)
-#define QPNP_PON_SW_RESET_S2_CTL2_RESET_EN_MASK		BIT(7)
-#define QPNP_PON_SW_RESET_GO_MASK			(0xFF)
-#define QPNP_PON_SW_RESET_GO_VAL			(0xA5)
 
 /* Ranges */
 #define QPNP_PON_S1_TIMER_MAX			10256
@@ -355,73 +345,6 @@ bool qpnp_pon_is_initialized(void)
 	return sys_reset_dev != NULL;
 }
 EXPORT_SYMBOL(qpnp_pon_is_initialized);
-
-int qpnp_pon_dvdd_reset(void)
-{
-	int rc;
-	struct qpnp_pon *pon = sys_reset_dev;
-
-	if (!pon)
-		return -ENODEV;
-
-	rc = qpnp_pon_masked_write(pon, QPNP_PON_SW_RESET_S2_CTL(pon->base),
-			QPNP_PON_SW_RESET_S2_CTL_MASK,
-			QPNP_PON_SW_RESET_S2_CTL_DVDD_HARD_RESET);
-	if (rc)
-		dev_err(&pon->spmi->dev,
-			"Unable to write to addr=%x, rc(%d)\n",
-				QPNP_PON_SW_RESET_S2_CTL(pon->base), rc);
-
-	rc = qpnp_pon_masked_write(pon, QPNP_PON_SW_RESET_S2_CTL2(pon->base),
-			QPNP_PON_SW_RESET_S2_CTL2_RESET_EN_MASK,
-			QPNP_PON_SW_RESET_S2_CTL2_RESET_EN_MASK);
-	if (rc)
-		dev_err(&pon->spmi->dev,
-			"Unable to write to addr=%x, rc(%d)\n",
-				QPNP_PON_SW_RESET_S2_CTL2(pon->base), rc);
-
-	/* Wait for printouts */
-	msleep(2000);
-
-	rc = qpnp_pon_masked_write(pon, QPNP_PON_SW_RESET_GO(pon->base),
-			QPNP_PON_SW_RESET_GO_MASK,
-			QPNP_PON_SW_RESET_GO_VAL);
-	if (rc)
-		dev_err(&pon->spmi->dev,
-			"Unable to write to addr=%x, rc(%d)\n",
-				QPNP_PON_SW_RESET_GO(pon->base), rc);
-	return rc;
-}
-EXPORT_SYMBOL(qpnp_pon_dvdd_reset);
-
-int qpnp_get_pmic_version(void)
-{
-	struct qpnp_pon *pon = sys_reset_dev;
-	u8 reg102, reg103;
-	int rc;
-
-	/* Read PMIC version fropm registers 0x102 and 0x103 */
-	rc = spmi_ext_register_readl(pon->spmi->ctrl, pon->spmi->sid,
-				0x102, &reg102, 1);
-	if (rc) {
-		dev_err(&pon->spmi->dev,
-			"Unable to read addr 0x102, rc(%d)\n", rc);
-		return rc;
-	}
-	rc = spmi_ext_register_readl(pon->spmi->ctrl, pon->spmi->sid,
-				0x103, &reg103, 1);
-	if (rc) {
-		dev_err(&pon->spmi->dev,
-			"Unable to read addr 0x103, rc(%d)\n", rc);
-		return rc;
-	}
-
-	rc = (reg103 << 4) | reg102;
-	dev_dbg(&pon->spmi->dev, "PMIC version: %X\n", rc);
-
-	return rc;
-}
-EXPORT_SYMBOL(qpnp_get_pmic_version);
 
 static struct qpnp_pon_config *
 qpnp_get_cfg(struct qpnp_pon *pon, u32 pon_type)

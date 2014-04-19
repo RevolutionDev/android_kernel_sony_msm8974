@@ -44,6 +44,7 @@ struct qpnp_vib {
 	struct hrtimer vib_timer;
 	struct timed_output_dev timed_dev;
 	struct work_struct work;
+	struct device sysfs_dev;
 
 	u8  reg_vtg_ctl;
 	u8  reg_en_ctl;
@@ -243,6 +244,63 @@ static void qpnp_vib_update(struct work_struct *work)
 	qpnp_vib_set(vib, vib->state);
 }
 
+static ssize_t qpnp_vib_attrs_show(struct device *dev,
+					struct device_attribute *attr,
+					char *buf)
+{
+	struct qpnp_vib *vib = container_of(dev, struct qpnp_vib, sysfs_dev);
+
+	return snprintf(buf, PAGE_SIZE, "%d\n",
+			vib->vtg_level * QPNP_VIB_UV_PER_MV);
+}
+
+static ssize_t qpnp_vib_attrs_store(struct device *dev,
+					struct device_attribute *attr,
+					const char *buf, size_t count)
+{
+	int tmp_vtg_level;
+	unsigned long value;
+	int ret = -EINVAL;
+	struct qpnp_vib *vib = container_of(dev, struct qpnp_vib, sysfs_dev);
+
+	if (kstrtoul(buf, 0, &value)) {
+		dev_err(dev, "%s: Invalid value\n", __func__);
+		goto err_out;
+	}
+
+	value /= QPNP_VIB_UV_PER_MV;
+
+	if (value) {
+		if (value < QPNP_VIB_MIN_LEVEL ||
+				value > QPNP_VIB_MAX_LEVEL) {
+			dev_err(dev, "Invalid voltage level\n");
+			goto err_out;
+		}
+	} else {
+		dev_err(dev, "Voltage level not specified\n");
+		goto err_out;
+	}
+	tmp_vtg_level = vib->vtg_level;
+	vib->vtg_level = value;
+
+	ret = qpnp_vib_set(vib, vib->state);
+	if (ret) {
+		dev_err(dev, "%s: qpnp_vib_set failed %d\n", __func__, ret);
+		vib->vtg_level = tmp_vtg_level;
+		goto err_out;
+	}
+
+	return count;
+
+err_out:
+	return ret;
+}
+
+static struct device_attribute qpnp_vib_attr =
+	__ATTR(qpnp_vib, S_IWUSR | S_IRUGO,
+	qpnp_vib_attrs_show, qpnp_vib_attrs_store);
+
+
 static int qpnp_vib_get_time(struct timed_output_dev *dev)
 {
 	struct qpnp_vib *vib = container_of(dev, struct qpnp_vib,
@@ -341,15 +399,35 @@ static int __devinit qpnp_vibrator_probe(struct spmi_device *spmi)
 	vib->timed_dev.get_time = qpnp_vib_get_time;
 	vib->timed_dev.enable = qpnp_vib_enable;
 
-	dev_set_drvdata(&spmi->dev, vib);
-
 	rc = timed_output_dev_register(&vib->timed_dev);
 	if (rc < 0)
 		goto gen_err;
+		
+	vib->sysfs_dev.init_name = "qpnp_vib";
 
-	device_create_file(vib->timed_dev.dev, &dev_attr_vtg_level);
+	rc = device_register(&vib->sysfs_dev);
+	if (rc < 0) {
+		dev_err(&spmi->dev, "%s: device_register failed %d\n",
+			__func__, rc);
+		goto error_dev_register;
+	}
+	rc = device_create_file(&vib->sysfs_dev, &qpnp_vib_attr);
+	if (rc < 0) {
+		dev_err(&spmi->dev, "%s: device_create_file failed %d\n",
+			__func__, rc);
+		goto error_device_create_file;
+	}
+
+	dev_set_drvdata(&spmi->dev, vib);
 
 	vib_dev = vib;
+
+	return rc;
+
+error_device_create_file:
+	device_unregister(&vib->sysfs_dev);
+error_dev_register:
+	timed_output_dev_unregister(&vib->timed_dev);
 
 gen_err:
 	return rc;
@@ -362,6 +440,8 @@ static int  __devexit qpnp_vibrator_remove(struct spmi_device *spmi)
 	cancel_work_sync(&vib->work);
 	hrtimer_cancel(&vib->vib_timer);
 	timed_output_dev_unregister(&vib->timed_dev);
+	device_remove_file(&vib->sysfs_dev, &qpnp_vib_attr);
+	device_unregister(&vib->sysfs_dev);
 
 	return 0;
 }

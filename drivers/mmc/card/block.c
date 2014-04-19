@@ -2809,9 +2809,12 @@ static struct mmc_blk_data *mmc_blk_alloc_req(struct mmc_card *card,
 	blk_queue_logical_block_size(md->queue.queue, 512);
 	set_capacity(md->disk, size);
 
-	card->bkops_info.size_percentage_to_queue_delayed_work = percentage;
-	card->bkops_info.min_sectors_to_queue_delayed_work =
-		((unsigned int)size * percentage) / 100;
+	if (area_type & MMC_BLK_DATA_AREA_MAIN) {
+		card->bkops_info.size_percentage_to_queue_delayed_work =
+			percentage;
+		card->bkops_info.min_sectors_to_queue_delayed_work =
+			((unsigned int)size * percentage) / 100;
+	}
 
 	if (mmc_host_cmd23(card->host)) {
 		if (mmc_card_mmc(card) ||

@@ -659,6 +659,16 @@ config QPNP_MISC
 	  peripheral. The MISC peripheral holds the USB ID interrupt
 	  and the driver provides an API to check if this interrupt
 	  is available on the current PMIC chip.
+	  
+config NFC_PN547
+	tristate "NFC driver for PN547"
+	depends on I2C
+	default n
+	help
+	  This option enables device driver for PN547.
+	  GPIO, PMIC GPIO and MPP configurations are controlled.
+	  The sysfs files provides the interface to send and receive
+	  the data, response and notification.
 
 config USB_HSIC_SMSC_HUB
 	tristate "Support for HSIC based MSM on-chip SMSC3503 HUB"
@@ -704,12 +714,25 @@ config RAMDUMP_TAGS
 	  aside to hold the information which will later be used by
 	  the ramdump application.
 
-config NFC_PN544
-	tristate "NFC driver for PN544"
+config SONY_SUBSYS_RAMDUMP
+	bool "Subsystem ramdump for external devices"
+	default n
+	depends on DEBUG_FS
+	help
+	  This module will create a debugfs entry to collect the external
+	  subsystem crash information.The debugfs entry will be created for
+	  registerd external subsystem and also removed if the external
+	  subsystem is removed.
+
+config ONESEG_TUNER_SMTVJ18X
+	tristate "ONESEG tuner driver for SMT-VJ18x"
 	default n
 	depends on I2C
 	help
-	  This option enables support for PN544.
+	  Select this module to enable 1seg Tuner Driver which supports
+	  1seg contents viewing.
+	  This module controls power and reset of SMT-VEJ18x and supports
+	  the ANT which is equiped as default.
 
 config ISDBT_TUNER_SMTEJ11X
 	tristate "ISDBT/Tmm tuner driver for SMT-EJ11x"
@@ -721,21 +744,20 @@ config ISDBT_TUNER_SMTEJ11X
 	  This module controls power and reset of SMT-EJ11x and controls
 	  reception ANT switching.
 
-config RPM975H16E4A_IRDA
-	bool "IrDA power control driver for Rohm RPM975-H16E4A"
+config IR_REMOTE
+	bool "MAXQ614 IR Remote control"
 	default n
 	help
-	  This option enables support for Rohm RPM975-H16E4A.
+	  This option enables device driver support for IR remote control
+	  device.
 
-config ONESEG_TUNER_SMTVJ18X
-	tristate "ONESEG tuner driver for SMT-VJ18x"
-	default n
+config AD7146
+	tristate "AD7146 proximity driver"
 	depends on I2C
+	default n
 	help
-	  Select this module to enable 1seg Tuner Driver which supports
-	  1seg contents viewing.
-	  This module controls power and reset of SMT-VEJ18x and supports
-	  the ANT which is equiped as default.
+	  If you say yes here you get support for the AD7146 chip.
+	  This is used as a proximity sensor.
 
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"

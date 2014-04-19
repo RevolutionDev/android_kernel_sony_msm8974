@@ -6817,8 +6817,10 @@ struct sony_popp_effect_set_params_command {
 #define ASM_MODULE_ID_DN			0x10002040
 #define ASM_MODULE_ID_CA_VPT			0x10002050
 #define ASM_MODULE_ID_VPT51			0x10002060
+#define ASM_MODULE_ID_S_FORCE		0x10002070
 
 #define PARAM_ID_SONY_EFFECT			0x10002001
+#define PARAM_ID_SONY_EFFECT_TUNING		0x10002002
 
 #define ASM_STREAM_POSTPROC_TOPO_ID_SONY	0x10002101
 
@@ -6851,14 +6853,24 @@ struct dynamicnormalizer_params {
 	uint16_t	reserved;
 } __packed;
 
+struct s_force_params {
+	uint16_t	enable;
+	uint16_t	reserved;
+} __packed;
+
+struct s_force_tuning_params {
+	unsigned char	coefs[1016];
+} __packed;
+
 int sony_copp_effect_set(int port_id, void *params,
 				uint32_t param_size, uint32_t module_id);
 int sony_copp_effect_get(int port_id, void *params,
 				uint32_t param_size, uint32_t module_id);
 int sony_popp_effect_set(void *client, void *params,
-				uint32_t param_size, uint32_t module_id);
+		uint32_t param_size, uint32_t module_id, uint32_t param_id);
 void sony_vol_module_update(void *client, uint32_t module);
 void sony_send_max_vol(void *client);
+void sony_send_s_force_param(int type, void *client);
 
 /* SOMC effect end */
 

@@ -26,10 +26,6 @@
 
 #define CEN_RETRY_MAX	5
 
-#define IRQ_ID_INT	2
-#define IRQ_ID_RFS	1
-#define IRQ_ID_INTU	0
-
 enum gpio_id {
 	LOCK_PIN = 0,
 	FF_PIN,
@@ -40,6 +36,7 @@ enum gpio_id {
 	RFS_PIN,
 	INT_PIN,
 	PVDD_PIN,
+	KOTO_PWR_PIN,
 	TX_PIN,
 	RX_PIN,
 };
@@ -54,6 +51,7 @@ static char const * const gpio_rsrcs[] = {
 	"rfs-gpio",
 	"int-gpio",
 	"hvdd-gpio",
+	"koto_pwr-gpio",
 	"tx-gpio",
 	"rx-gpio",
 };
@@ -112,6 +110,8 @@ static int felica_cen_write(u8 arg, void *user)
 	struct cxd2235agg_data *my_data = user;
 	int i;
 	u8 state;
+	bool wait_flg = false;
+	static bool koto_pwr_init;
 
 	if (!my_data)
 		return -EINVAL;
@@ -122,6 +122,25 @@ static int felica_cen_write(u8 arg, void *user)
 		dev_err(&my_data->pdev->dev,
 			"%s: Error. Invalid val @CEN write.\n", __func__);
 		return -EINVAL;
+	}
+
+	if (arg == 0x1) {
+		if (!koto_pwr_init) {
+			koto_pwr_init = true;
+			wait_flg = true;
+			gpio_set_value_cansleep(my_data->gpios[LDO_EN_PIN],
+						1);
+			msleep_interruptible(1);
+			gpio_set_value_cansleep(my_data->gpios[KOTO_PWR_PIN],
+						1);
+			msleep_interruptible(2);
+			gpio_set_value_cansleep(my_data->gpios[LDO_EN_PIN],
+						0);
+			msleep_interruptible(3);
+			gpio_set_value_cansleep(my_data->gpios[KOTO_PWR_PIN],
+						0);
+			msleep_interruptible(50);
+		}
 	}
 
 	for (i = 0; i < CEN_RETRY_MAX; i++) {
@@ -141,6 +160,8 @@ static int felica_cen_write(u8 arg, void *user)
 	return -EIO;
 
 end:
+	if (wait_flg)
+		msleep_interruptible(1);
 	return 0;
 }
 
@@ -207,6 +228,25 @@ static enum gpio_id second_req_ids[] = {
 	INT_PIN,
 };
 
+static struct qpnp_pin_cfg intu_pin_cfg[] = {
+	{
+		.mode = QPNP_PIN_MODE_DIG_IN,
+		.pull = QPNP_PIN_GPIO_PULL_DN,
+		.vin_sel = QPNP_PIN_VIN2,
+		.out_strength = QPNP_PIN_OUT_STRENGTH_LOW,
+		.src_sel = QPNP_PIN_SEL_FUNC_CONSTANT,
+		.master_en = QPNP_PIN_MASTER_ENABLE,
+	},
+	{
+		.mode = QPNP_PIN_MODE_DIG_IN,
+		.pull = QPNP_PIN_GPIO_PULL_NO,
+		.vin_sel = QPNP_PIN_VIN2,
+		.out_strength = QPNP_PIN_OUT_STRENGTH_LOW,
+		.src_sel = QPNP_PIN_SEL_FUNC_CONSTANT,
+		.master_en = QPNP_PIN_MASTER_ENABLE,
+	},
+};
+
 static void felica_pon_write(int val, void *user)
 {
 	static bool pvdd_enable_oneshot;
@@ -221,6 +261,7 @@ static void felica_pon_write(int val, void *user)
 	if (val) {
 		if (!pvdd_enable_oneshot && !my_data->is_enable) {
 			gpio_set_value_cansleep(my_data->gpios[PVDD_PIN], 1);
+			msleep_interruptible(1);
 			for (i = 0; i < ARRAY_SIZE(second_req_ids); i++) {
 				ret = gpio_request(
 					my_data->gpios[second_req_ids[i]],
@@ -234,6 +275,14 @@ static void felica_pon_write(int val, void *user)
 					goto error_gpio_second_request;
 				}
 			}
+			ret = qpnp_pin_config(my_data->gpios[INTU_PIN],
+						&intu_pin_cfg[1]);
+			if (ret) {
+				dev_err(&my_data->pdev->dev,
+					"%s: INTU set config failed: %d\n",
+					__func__, ret);
+				goto error_intu_pin_config;
+			}
 			my_data->is_enable = true;
 			usleep_range(500, 550);
 			ret = felica_snfc_irq_start(&my_data->pdev->dev);
@@ -245,6 +294,7 @@ static void felica_pon_write(int val, void *user)
 			}
 			cxd2235agg_setup_uart_gpio(my_data, 1);
 			pvdd_enable_oneshot = true;
+			msleep_interruptible(10);
 		}
 		gpio_set_value_cansleep(my_data->gpios[PON_PIN], 1);
 	} else {
@@ -254,6 +304,8 @@ static void felica_pon_write(int val, void *user)
 	return;
 
 error_irq_start:
+	qpnp_pin_config(my_data->gpios[INTU_PIN], &intu_pin_cfg[0]);
+error_intu_pin_config:
 error_gpio_second_request:
 	for (; i >= 0; --i)
 		gpio_free(my_data->gpios[second_req_ids[i]]);
@@ -272,6 +324,7 @@ static void felica_pon_release(void *user)
 	dev_dbg(&my_data->pdev->dev, ": %s\n", __func__);
 
 	if (my_data->is_enable) {
+		qpnp_pin_config(my_data->gpios[INTU_PIN], &intu_pin_cfg[0]);
 		for (i = 0; i < ARRAY_SIZE(second_req_ids); i++)
 			gpio_free(my_data->gpios[second_req_ids[i]]);
 		gpio_set_value_cansleep(my_data->gpios[PON_PIN], 0);
@@ -498,6 +551,7 @@ static enum gpio_id req_ids[] = {
 	LDO_EN_PIN,
 	HSEL_PIN,
 	PVDD_PIN,
+	KOTO_PWR_PIN,
 	TX_PIN,
 	RX_PIN,
 };
@@ -552,6 +606,13 @@ static int cxd2235agg_dev_remove(struct platform_device *pdev,
 	return 0;
 }
 
+static struct qpnp_pin_cfg lock_pin_enable = {
+	.mode = QPNP_PIN_MODE_DIG_IN,
+	.vin_sel = QPNP_PIN_VIN0,
+	.src_sel = QPNP_PIN_SEL_FUNC_CONSTANT,
+	.master_en = QPNP_PIN_MASTER_ENABLE,
+};
+
 static int cxd2235agg_probe(struct platform_device *pdev)
 {
 	int ret, irq;
@@ -582,21 +643,24 @@ static int cxd2235agg_probe(struct platform_device *pdev)
 		goto error_dev_init;
 	}
 
-	irq = platform_get_irq(pdev, IRQ_ID_INT);
+	irq = gpio_to_irq(my_data->gpios[INT_PIN]);
 	if (irq < 0) {
-		dev_err(&pdev->dev, "%s: failed to get irq 2\n", __func__);
+		dev_err(&pdev->dev, "%s: failed to get int irq: %d\n",
+			__func__, irq);
 		goto error_get_irq;
 	}
 	felica_data->irq_int = irq;
-	irq = platform_get_irq(pdev, IRQ_ID_RFS);
+	irq = gpio_to_irq(my_data->gpios[RFS_PIN]);
 	if (irq < 0) {
-		dev_err(&pdev->dev, "%s: failed to get irq 1\n", __func__);
+		dev_err(&pdev->dev, "%s: failed to get rfs irq: %d\n",
+			__func__, irq);
 		goto error_get_irq;
 	}
 	felica_data->irq_rfs = irq;
-	irq = platform_get_irq(pdev, IRQ_ID_INTU);
+	irq = gpio_to_irq(my_data->gpios[INTU_PIN]);
 	if (irq < 0) {
-		dev_err(&pdev->dev, "%s: failed to get irq 0\n", __func__);
+		dev_err(&pdev->dev, "%s: failed to get intu irq: %d\n",
+			__func__, irq);
 		goto error_get_irq;
 	}
 	felica_data->irq_intu = irq;
@@ -619,9 +683,16 @@ static int cxd2235agg_probe(struct platform_device *pdev)
 			__func__);
 		goto error_felica_snfc_register;
 	}
+	ret = qpnp_pin_config(my_data->gpios[LOCK_PIN], &lock_pin_enable);
+	if (ret) {
+		dev_err(&pdev->dev, "%s: LOCK set config failed: %d\n",
+			__func__, ret);
+		goto error_lock_pin_config;
+	}
 
 	return 0;
 
+error_lock_pin_config:
 error_felica_snfc_register:
 error_get_irq:
 	cxd2235agg_dev_remove(pdev, my_data);

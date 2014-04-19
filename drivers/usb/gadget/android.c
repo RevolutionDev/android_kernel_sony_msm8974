@@ -97,6 +97,9 @@
 #include "f_uac1.c"
 #endif
 #include "f_ncm.c"
+#ifdef CONFIG_USB_ANDROID_GG
+#include "f_gg.c"
+#endif
 
 MODULE_AUTHOR("Mike Lockwood");
 MODULE_DESCRIPTION("Android Composite USB Driver");
@@ -2205,6 +2208,85 @@ static struct android_usb_function uasp_function = {
 	.bind_config	= uasp_function_bind_config,
 };
 
+#ifdef CONFIG_USB_ANDROID_GG
+/* Gordon's Gate*/
+static char gordon_transports[32] = "tty";
+static ssize_t gordon_transports_store(
+		struct device *device, struct device_attribute *attr,
+		const char *buff, size_t size)
+{
+	strlcpy(gordon_transports, buff, sizeof(gordon_transports));
+
+	return size;
+}
+
+static DEVICE_ATTR(transports_gordon, S_IWUSR, NULL, gordon_transports_store);
+static struct device_attribute *gordon_function_attributes[] = {
+		&dev_attr_transports_gordon,
+		NULL
+};
+
+static void gordon_function_cleanup(struct android_usb_function *f)
+{
+	gserial_cleanup();
+}
+
+static int gordon_function_bind_config(struct android_usb_function *f,
+		struct usb_configuration *c)
+{
+	char *name, *b;
+	char buf[32];
+	int err = -1;
+	int i;
+	static int gordon_initialized, ports;
+
+	if (gordon_initialized)
+		goto bind_config;
+
+	gordon_initialized = 1;
+	strlcpy(buf, gordon_transports, sizeof(buf));
+	pr_info("gordon: buf: '%s'", buf);
+	b = strim(buf);
+
+	while (b) {
+		name = strsep(&b, ",");
+
+		if (name) {
+			err = ggordon_init_port(ports, name);
+			if (err) {
+				pr_err("gordon: Cannot open port '%s'", name);
+				goto out;
+			}
+			ports++;
+		}
+	}
+	err = ggate_setup(c);
+	if (err) {
+		pr_err("gordon: Cannot setup transports");
+		goto out;
+	}
+
+bind_config:
+	for (i = 0; i < ports; i++) {
+		err = ggor_bind_config(c, i);
+		if (err) {
+			pr_err("gordon: bind_config failed for port %d", i);
+			goto out;
+		}
+	}
+
+out:
+	return err;
+}
+
+static struct android_usb_function gordon_function = {
+	.name = "gordon",
+	.cleanup = gordon_function_cleanup,
+	.bind_config = gordon_function_bind_config,
+	.attributes = gordon_function_attributes,
+};
+#endif
+
 static struct android_usb_function *supported_functions[] = {
 	&mbim_function,
 	&ecm_qc_function,
@@ -2235,6 +2317,9 @@ static struct android_usb_function *supported_functions[] = {
 	&audio_source_function,
 #endif
 	&uasp_function,
+#ifdef CONFIG_USB_ANDROID_GG
+	&gordon_function,
+#endif
 	NULL
 };
 

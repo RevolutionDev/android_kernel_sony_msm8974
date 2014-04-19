@@ -1214,10 +1214,17 @@ static int snd_pcm_dev_disconnect(struct snd_device *device)
 		goto unlock;
 
 	list_del_init(&pcm->list);
-	for (cidx = 0; cidx < 2; cidx++)
-		for (substream = pcm->streams[cidx].substream; substream; substream = substream->next)
-			if (substream->runtime)
+for (cidx = 0; cidx < 2; cidx++)
+		for (substream = pcm->streams[cidx].substream; substream;
+			substream = substream->next) {
+			if (substream->runtime) {
+				if (substream->runtime->twake)
+					wake_up(&substream->runtime->tsleep);
+				else
+					wake_up(&substream->runtime->sleep);
 				substream->runtime->status->state = SNDRV_PCM_STATE_DISCONNECTED;
+			}
+		}
 	list_for_each_entry(notify, &snd_pcm_notify_list, list) {
 		notify->n_disconnect(pcm);
 	}

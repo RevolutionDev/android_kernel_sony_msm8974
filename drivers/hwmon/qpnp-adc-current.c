@@ -288,10 +288,6 @@ static int32_t qpnp_iadc_status_debug(struct qpnp_iadc_chip *dev)
 	pr_debug("EOC not set with status:%x, dig:%x, ch:%x, mode:%x, en:%x\n",
 			status1, dig, chan, mode, en);
 
-	/* somc workaround for adc lock-up issue for PMIC 3.0 */
-	if (qpnp_get_pmic_version() == 0x30)
-		qpnp_pon_dvdd_reset();
-
 	rc = qpnp_iadc_enable(dev, false);
 	if (rc < 0) {
 		pr_err("IADC disable failed with %d\n", rc);
@@ -605,8 +601,13 @@ static int32_t qpnp_iadc_comp_info(struct qpnp_iadc_chip *iadc)
 
 	rc = qpnp_iadc_read_reg(iadc, QPNP_IADC_ATE_GAIN_CALIB_OFFSET,
 						&iadc->iadc_comp.sys_gain);
-	if (rc < 0)
+	if (rc < 0) {
 		pr_err("full scale read failed with %d\n", rc);
+		return rc;
+	}
+
+	if (iadc->external_rsense)
+		iadc->iadc_comp.ext_rsense = true;
 
 	pr_debug("fab id = %u, revision_dig_major = %u, revision_ana_minor = %u sys gain = %u, external_rsense = %d\n",
 			iadc->iadc_comp.id,
@@ -1260,12 +1261,6 @@ static int __devinit qpnp_iadc_probe(struct spmi_device *spmi)
 	struct device_node *node = spmi->dev.of_node;
 	struct device_node *child;
 	int rc, count_adc_channel_list = 0, i = 0;
-
-	if (!qpnp_pon_is_initialized()) {
-		/* pon reset is needed for iadc queries */
-		pr_err("qpnp-adc-current requests probe deferral\n");
-		return -EPROBE_DEFER;
-	}
 
 	for_each_child_of_node(node, child)
 		count_adc_channel_list++;
