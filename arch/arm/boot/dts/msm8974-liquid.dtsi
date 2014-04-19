@@ -763,12 +763,10 @@
 
 &slim_msm {
 	taiko_codec {
-/*
 		qcom,cdc-micbias1-ext-cap;
 		qcom,cdc-micbias2-ext-cap;
 		qcom,cdc-micbias3-ext-cap;
 		qcom,cdc-micbias4-ext-cap;
-*/
 
 		/*
 		 * Liquid has external spkrdrv supply. Give a dummy supply to
@@ -815,7 +813,7 @@
 	status = "ok";
 	otg-parent-supply = <&ext_5v>;
 
-	/* qcom,charging-disabled; */
+	qcom,charging-disabled;
 
 	qcom,chgr@1000 {
 		status = "ok";

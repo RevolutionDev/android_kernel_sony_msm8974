@@ -992,6 +992,21 @@ failed:
 }
 EXPORT_SYMBOL(smem_initialized_check);
 
+bool smem_is_volte_restart(void)
+{
+	unsigned int *smem_vendor;
+	unsigned int vendor_data, size;
+
+	smem_vendor = smem_get_entry_no_rlock(SMEM_ID_VENDOR2, &size);
+	if (smem_vendor) {
+		vendor_data = readl_relaxed(smem_vendor);
+		if (vendor_data == SMEM_VOLTE_RESTART)
+			return 1;
+	}
+	return 0;
+}
+EXPORT_SYMBOL(smem_is_volte_restart);
+
 static int restart_notifier_cb(struct notifier_block *this,
 				unsigned long code,
 				void *data)
@@ -1008,7 +1023,7 @@ static int restart_notifier_cb(struct notifier_block *this,
 		remote_spin_release(&remote_spinlock, notifier->processor);
 		remote_spin_release_all(notifier->processor);
 
-		if (smem_ramdump_dev) {
+		if (smem_ramdump_dev && !smem_is_volte_restart()) {
 			int ret;
 
 			SMEM_DBG("%s: saving ramdump\n", __func__);

@@ -220,6 +220,14 @@ int subsys_get_restart_level(struct subsys_device *dev)
 }
 EXPORT_SYMBOL(subsys_get_restart_level);
 
+void subsys_set_restart_level(struct subsys_device *dev, int new_level)
+{
+	if (new_level == RESET_SOC || new_level == RESET_SUBSYS_COUPLED)
+		dev->restart_level = new_level;
+	else
+		pr_err("Incorrect restart level %d\n", new_level);
+}
+
 static void subsys_set_state(struct subsys_device *subsys,
 			     enum subsys_state state)
 {

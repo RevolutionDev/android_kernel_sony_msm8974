@@ -73,6 +73,12 @@ endif
    dtb-$(CONFIG_MACH_SONY_AMAMI_ROW)	+= msm8974-v2.2-rhine_amami_row.dtb
    dtb-$(CONFIG_MACH_SONY_AMAMI_DCM)	+= msm8974-v2.0-1-rhine_amami_dcm.dtb
    dtb-$(CONFIG_MACH_SONY_AMAMI_DCM)	+= msm8974-v2.2-rhine_amami_dcm.dtb
+   dtb-$(CONFIG_MACH_SONY_SIRIUS)		+= msm8974pro-ab-shinano_sirius.dtb
+   dtb-$(CONFIG_MACH_SONY_SIRIUS_BRAZIL)+= msm8974pro-ab-shinano_sirius_brazil.dtb
+   dtb-$(CONFIG_MACH_SONY_CASTOR)		+= msm8974pro-ab-shinano_castor.dtb
+   dtb-$(CONFIG_MACH_SONY_CASTOR_BRAZIL)+= msm8974pro-ab-shinano_castor_brazil.dtb
+   dtb-$(CONFIG_MACH_SONY_CASTOR_WINDY)	+= apq8074pro-ab-shinano_castor_windy.dtb
+
 
 # APQ8084
    zreladdr-$(CONFIG_ARCH_APQ8084)	:= 0x00008000

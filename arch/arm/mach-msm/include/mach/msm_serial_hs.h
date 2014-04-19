@@ -46,6 +46,7 @@ struct msm_serial_hs_platform_data {
 	int uart_rfr_gpio;
 	unsigned bam_tx_ep_pipe_index;
 	unsigned bam_rx_ep_pipe_index;
+	void (*exit_lpm_cb)(struct uart_port *);
 };
 
 unsigned int msm_hs_tx_empty(struct uart_port *uport);

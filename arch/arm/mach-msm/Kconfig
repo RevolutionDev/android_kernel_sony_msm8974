@@ -1176,6 +1176,51 @@ config MACH_SONY_AMAMI_DCM
 	  It is based on QCOM MSM8974 chipset.
 	  If you enable this config,
 	  Please use SONY Mobile source tree.
+	  
+config MACH_SONY_SIRIUS
+	depends on ARCH_MSM8974
+	bool "Sony Mobile Sirius"
+	help
+	  Support for the SONY Mobile Sirius device.
+	  It is based on QCOM MSM8974 AB chipset.
+	  If you enable this config,
+	  Please use SONY Mobile source tree.
+
+config MACH_SONY_SIRIUS_BRAZIL
+	depends on ARCH_MSM8974
+	bool "Sony Mobile Sirius Brazil"
+	help
+	  Support for the SONY Mobile Sirius Brazil device.
+	  It is based on QCOM MSM8974 AB chipset.
+	  If you enable this config,
+	  Please use SONY Mobile source tree.
+
+config MACH_SONY_CASTOR
+	depends on ARCH_MSM8974
+	bool "Sony Mobile Castor"
+	help
+	  Support for the SONY Mobile Castor device.
+	  It is based on QCOM MSM8974 AB chipset.
+	  If you enable this config,
+	  Please use SONY Mobile source tree.
+
+config MACH_SONY_CASTOR_BRAZIL
+	depends on ARCH_MSM8974
+	bool "Sony Mobile Castor Brazil"
+	help
+	  Support for the SONY Mobile Castor Brazil device.
+	  It is based on QCOM MSM8974 AB chipset.
+	  If you enable this config,
+	  Please use SONY Mobile source tree.
+
+config MACH_SONY_CASTOR_WINDY
+	depends on ARCH_MSM8974
+	bool "Sony Mobile Castor Windy"
+	help
+	  Support for the SONY Mobile Castor Windy device.
+	  It is based on QCOM APQ8074 AB chipset.
+	  If you enable this config,
+	  Please use SONY Mobile source tree.
 
 config MSM_USE_TSIF1
 	depends on ARCH_MSM8X60
