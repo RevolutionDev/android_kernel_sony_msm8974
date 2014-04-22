@@ -342,8 +342,6 @@ else
 endif
 obj-$(CONFIG_ARCH_MSM8974) += board-8974-wifi.o
 
-endif
-
 CFLAGS_msm_vibrator.o += -Idrivers/staging/android
 CFLAGS_board-9615.o += -Idrivers/usb/gadget
 

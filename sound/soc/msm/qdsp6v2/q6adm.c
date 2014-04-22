@@ -38,6 +38,7 @@
 
 #define ULL_SUPPORTED_SAMPLE_RATE 48000
 #define ULL_MAX_SUPPORTED_CHANNEL 2
+uint8_t *adm_get_param_buffer;
 enum {
 	ADM_RX_AUDPROC_CAL,
 	ADM_TX_AUDPROC_CAL,
@@ -47,8 +48,6 @@ enum {
 	ADM_RTAC,
 	ADM_MAX_CAL_TYPES
 };
-
-uint8_t *adm_get_param_buffer;
 
 struct adm_ctl {
 	void *apr;
@@ -761,17 +760,15 @@ static int32_t adm_callback(struct apr_client_data *data, void *priv)
 			if (rtac_make_adm_callback(payload,
 					data->payload_size))
 				break;
-			/* payload is configured as below */
-			/* payload[0]:  return value      */
-			/* payload[1]:  module ID         */
-			/* payload[2]:  parameter ID      */
-			/* payload[3]:  parameter size    */
-			/* payload[4]-: parameter         */
-			adm_get_parameters[0] = payload[3];
-			pr_debug("GET_PP PARAM:received parameter length: %x\n",
-				adm_get_parameters[0]);
-			for (i = 0; i < payload[3]; i++)
-				adm_get_parameters[1+i] = payload[4+i];
+
+			if (data->payload_size > (4 * sizeof(uint32_t))) {
+				adm_get_parameters[0] = payload[3];
+				pr_debug("GET_PP PARAM:received parameter length: %x\n",
+						adm_get_parameters[0]);
+				/* storing param size then params */
+				for (i = 0; i < payload[3]; i++)
+					adm_get_parameters[1+i] = payload[4+i];
+			}
 			atomic_set(&this_adm.copp_stat[index], 1);
 			wake_up(&this_adm.wait[index]);
 			break;
